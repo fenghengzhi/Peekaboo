@@ -243,7 +243,8 @@ Pass `include_elements: true` to `see` or `inspect_ui` to also receive the eleme
 `see` bounds follow the same presentation rules as the CLI, so ROI results are ROI-local; application-partial
 observations make no actionable or value-settable claims. Clients that act on element IDs across calls can read this
 table instead of parsing the text summary. The option is off by default because a window can expose hundreds of
-elements; without it, the response is unchanged.
+elements. The table includes full collected field values rather than the prose summary's shortened display values;
+without the option, the response is unchanged.
 
 Successful `capture` results bind every retained frame and `contact.png` to capture-session-authored SHA-256 values.
 MCP exposes them in `artifact_sha256`; finalization revalidates those bytes, complete PNG decoding and dimensions, and

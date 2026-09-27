@@ -69,10 +69,11 @@ struct SeeRequest {
     }
 }
 
-struct ScreenshotOutput {
+struct SeeResponseOutput {
     let screenshotPath: String
     let annotatedPath: String?
     let imageData: Data
+    let includeElements: Bool
 }
 
 struct SeeCaptureArtifact {

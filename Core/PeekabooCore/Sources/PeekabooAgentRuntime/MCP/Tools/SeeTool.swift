@@ -174,13 +174,13 @@ public struct SeeTool: MCPTool {
             return try await self.buildToolResponse(
                 snapshot: snapshot,
                 elements: elements,
-                output: ScreenshotOutput(
+                output: SeeResponseOutput(
                     screenshotPath: publishedPaths.rawPath,
                     annotatedPath: publishedPaths.annotatedPath,
-                    imageData: responseImages.annotated ?? responseImages.raw),
+                    imageData: responseImages.annotated ?? responseImages.raw,
+                    includeElements: request.includeElements),
                 target: target,
-                actionResult: validatedActionResult,
-                includeElements: request.includeElements)
+                actionResult: validatedActionResult)
         } catch {
             let presentedError = ObservationActionResultSupport.preservingFailure(
                 error,
@@ -357,10 +357,9 @@ public struct SeeTool: MCPTool {
     private func buildToolResponse(
         snapshot: UISnapshot,
         elements: [UIElement],
-        output: ScreenshotOutput,
+        output: SeeResponseOutput,
         target: ObservationTargetArgument,
-        actionResult: UIAutomationActionResult<DesktopObservationResult>,
-        includeElements: Bool) async throws -> ToolResponse
+        actionResult: UIAutomationActionResult<DesktopObservationResult>) async throws -> ToolResponse
     {
         let observation = actionResult.payload
         let finalScreenshot = output.annotatedPath ?? output.screenshotPath
@@ -384,7 +383,7 @@ public struct SeeTool: MCPTool {
             elements: elements,
             observation: observation,
             actionResult: actionResult,
-            includeElements: includeElements)
+            includeElements: output.includeElements)
         var summary = ToolEventSummary(
             targetApp: snapshot.applicationName,
             windowTitle: snapshot.windowTitle,

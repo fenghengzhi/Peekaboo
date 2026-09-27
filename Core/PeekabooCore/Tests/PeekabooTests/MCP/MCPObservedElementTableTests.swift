@@ -144,12 +144,20 @@ struct MCPObservedElementTableTests {
         #expect(rows.first?.bounds == UIElementBounds(CGRect(x: 50, y: 50, width: 40, height: 20)))
     }
 
-    @Test
-    func `Application-partial rows make no actionable or settable claims`() {
-        let row = UIElementSummary(Self.field, mutationTargetingAvailable: false)
-        #expect(row.is_actionable == false)
-        #expect(row.is_value_settable == nil)
-        #expect(UIElementSummary(Self.field, mutationTargetingAvailable: true).is_value_settable == true)
+    @Test(arguments: [false, true])
+    func `Element table derives mutation claims from observation metadata`(_ applicationPartial: Bool) throws {
+        let metadata = DetectionMetadata(
+            detectionTime: 0.01,
+            elementCount: 1,
+            method: "AXorcist",
+            warnings: applicationPartial ? [DetectionMetadata.applicationScopedAccessibilityFallbackWarning] : [])
+        let table = try ObservedElementTableMetadata.value(for: [Self.field], metadata: metadata)
+        let rows = try Self.rows(in: table)
+        let row = try #require(rows.first)
+
+        #expect(row.is_actionable == (!applicationPartial && Self.field.isActionable))
+        #expect(row.is_value_settable == (applicationPartial ? nil : true))
+        #expect(row.value == Self.field.value)
     }
 
     @Test(arguments: [nil, "", "see", "inspect_ui", "image", "capture", "click", "type"] as [String?])
@@ -177,7 +185,7 @@ struct MCPObservedElementTableTests {
         ElementDetectionResult(
             snapshotId: "synthetic-element-table",
             screenshotPath: "",
-            elements: DetectedElements(buttons: [Self.button], textFields: [Self.field]),
+            elements: DetectedElements(buttons: [self.button], textFields: [self.field]),
             metadata: DetectionMetadata(
                 detectionTime: 0.01,
                 elementCount: 2,
