@@ -247,40 +247,6 @@ struct SeeCommandRenderContext {
     }
 }
 
-struct UIElementSummary: Codable {
-    let id: String
-    let role: String
-    let ax_role: String?
-    let title: String?
-    let label: String?
-    let value: String?
-    let description: String?
-    let role_description: String?
-    let help: String?
-    let identifier: String?
-    let confidence: Double?
-    let bounds: UIElementBounds
-    let is_actionable: Bool
-    let is_enabled: Bool?
-    let is_selected: Bool?
-    let is_value_settable: Bool?
-    let keyboard_shortcut: String?
-}
-
-struct UIElementBounds: Codable {
-    let x: Double
-    let y: Double
-    let width: Double
-    let height: Double
-
-    init(_ rect: CGRect) {
-        self.x = rect.origin.x
-        self.y = rect.origin.y
-        self.width = rect.size.width
-        self.height = rect.size.height
-    }
-}
-
 struct SeeAnalysisData: Codable {
     let provider: String
     let model: String

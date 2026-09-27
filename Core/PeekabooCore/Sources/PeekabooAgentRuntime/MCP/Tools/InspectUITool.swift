@@ -62,6 +62,9 @@ public struct InspectUITool: MCPTool {
                     Increase this for flat Qt/Electron panels with many sibling controls.
                     """,
                     minimum: 1),
+                ObservedElementTableMetadata.argumentName: SchemaBuilder.boolean(
+                    description: ObservedElementTableMetadata.argumentDescription,
+                    default: false),
             ],
             required: [])
     }
@@ -131,6 +134,11 @@ public struct InspectUITool: MCPTool {
             }
             if let allowed = snapshotResult.metadata.desktopMutationPreservationAllowed {
                 metadataValues["desktop_mutation_preservation_allowed"] = .bool(allowed)
+            }
+            if request.includeElements {
+                metadataValues[ObservedElementTableMetadata.key] = try ObservedElementTableMetadata.value(
+                    for: snapshotResult.elements.all,
+                    metadata: snapshotResult.metadata)
             }
             let metadata = try ObservationActionResultSupport.metadata(
                 merging: metadataValues,

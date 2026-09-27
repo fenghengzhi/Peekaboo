@@ -15,6 +15,7 @@ struct SeeRequest {
     let webFocus: Bool
     let traversalBudget: AXTraversalBudget
     let roi: CaptureRegionOfInterest?
+    let includeElements: Bool
 
     init(arguments: ToolArguments) throws {
         self.appTarget = arguments.getString("app_target")
@@ -25,6 +26,7 @@ struct SeeRequest {
         self.annotate = arguments.getBool("annotate") ?? false
         self.ocr = arguments.getBool("ocr") ?? false
         self.webFocus = arguments.getBool("web_focus") ?? false
+        self.includeElements = arguments.getBool(ObservedElementTableMetadata.argumentName) ?? false
         if let rawROI = arguments.getString("roi")?.trimmingCharacters(in: .whitespacesAndNewlines),
            !rawROI.isEmpty
         {

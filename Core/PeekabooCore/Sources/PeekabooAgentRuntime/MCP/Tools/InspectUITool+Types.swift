@@ -8,6 +8,7 @@ struct InspectUIRequest {
     let windowIDValue: Value?
     let snapshotId: String?
     let webFocus: Bool
+    let includeElements: Bool
     let traversalBudget: AXTraversalBudget
 
     init(arguments: ToolArguments) throws {
@@ -15,6 +16,7 @@ struct InspectUIRequest {
         self.windowIDValue = arguments.getValue(for: "window_id")
         self.snapshotId = arguments.getString("snapshot")
         self.webFocus = arguments.getBool("web_focus") ?? false
+        self.includeElements = arguments.getBool(ObservedElementTableMetadata.argumentName) ?? false
         self.traversalBudget = try AXTraversalBudget.resolved(
             maxDepth: Self.positiveInt("max_depth", in: arguments),
             maxElementCount: Self.positiveInt("max_elements", in: arguments),

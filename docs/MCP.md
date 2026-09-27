@@ -235,6 +235,16 @@ normal snapshot or live receiver validation. Native Agent tools retain the same 
 External MCP clients may not show `_meta` to their model; this addition alone does not guarantee model-visible focus
 in those clients, and the observation's text summary is unchanged.
 
+Pass `include_elements: true` to `see` or `inspect_ui` to also receive the element table as data in
+`_meta.ui_elements`, together with `_meta.snapshot_id`. Each row uses the same type and field names as
+`ui_elements[]` in `peekaboo see --json` (`id`, semantic `role`, raw `ax_role`, `title`, `label`, `value`,
+`description`, `role_description`, `help`, `identifier`, `confidence`, `bounds` `{x, y, width, height}`,
+`is_actionable`, `is_enabled`, `is_selected`, `is_value_settable`, `keyboard_shortcut`; absent values are omitted).
+`see` bounds follow the same presentation rules as the CLI, so ROI results are ROI-local; application-partial
+observations make no actionable or value-settable claims. Clients that act on element IDs across calls can read this
+table instead of parsing the text summary. The option is off by default because a window can expose hundreds of
+elements; without it, the response is unchanged.
+
 Successful `capture` results bind every retained frame and `contact.png` to capture-session-authored SHA-256 values.
 MCP exposes them in `artifact_sha256`; finalization revalidates those bytes, complete PNG decoding and dimensions, and
 the exact semantic `metadata.json` result before reporting success.

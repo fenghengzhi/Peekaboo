@@ -102,26 +102,8 @@ extension SeeCommand {
 
     func makeJSONResult(context: SeeCommandRenderContext, snapshotPaths: SnapshotPaths) -> SeeResult {
         let mutationTargetingAvailable = context.snapshotReusable
-        let uiElements: [UIElementSummary] = context.elements.all.map { element in
-            UIElementSummary(
-                id: element.id,
-                role: element.type.rawValue,
-                ax_role: element.attributes["role"],
-                title: element.attributes["title"],
-                label: element.label,
-                value: element.value,
-                description: element.attributes["description"],
-                role_description: element.attributes["roleDescription"],
-                help: element.attributes["help"],
-                identifier: element.attributes["identifier"],
-                confidence: element.attributes["confidence"].flatMap(Double.init),
-                bounds: UIElementBounds(element.bounds),
-                is_actionable: mutationTargetingAvailable && element.isActionable,
-                is_enabled: element.knownIsEnabled,
-                is_selected: element.isSelected,
-                is_value_settable: mutationTargetingAvailable ? element.isValueSettable : nil,
-                keyboard_shortcut: element.attributes["keyboardShortcut"]
-            )
+        let uiElements = context.elements.all.map {
+            UIElementSummary($0, mutationTargetingAvailable: mutationTargetingAvailable)
         }
 
         return SeeResult(
