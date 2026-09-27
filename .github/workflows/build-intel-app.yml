@@ -1,0 +1,176 @@
+name: Build Intel macOS App
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: peekaboo-intel-app
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+      SOURCE_COMMIT: b54551ce2d0013e52c2a405bfeabced88ec5c2e0
+      PEEKABOO_CONFIG_DISABLE_MIGRATION: '1'
+    steps:
+      - name: Check out Peekaboo v4.6.0 and pinned submodules
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: b54551ce2d0013e52c2a405bfeabced88ec5c2e0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Verify the Intel toolchain and prepare the workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          mkdir -p artifacts
+          xcodebuild -version | tee artifacts/toolchain.txt
+          swift --version | tee -a artifacts/toolchain.txt
+          sw_vers | tee -a artifacts/toolchain.txt
+          python3 scripts/setup-swift-workspace.py setup
+
+      - name: Compile the Intel desktop app
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/setup-swift-workspace.py run -- \
+            xcodebuild -workspace Apps/Peekaboo.xcworkspace \
+              -scheme Peekaboo -configuration Release -sdk macosx \
+              -destination 'platform=macOS,arch=x86_64' \
+              -derivedDataPath "$RUNNER_TEMP/PeekabooIntelDerivedData" \
+              -jobs 3 \
+              -disableAutomaticPackageResolution \
+              -onlyUsePackageVersionsFromResolvedFile \
+              -skipPackageUpdates \
+              build \
+              ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES \
+              MACOSX_DEPLOYMENT_TARGET=15.0 \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+              PEEKABOO_SOURCE_COMMIT="$SOURCE_COMMIT" \
+            2>&1 | tee artifacts/app-build.log
+
+      - name: Package and inspect the personal Intel build
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$PWD/artifacts/Peekaboo.app"
+          ditto "$RUNNER_TEMP/PeekabooIntelDerivedData/Build/Products/Release/Peekaboo.app" "$app"
+          codesign --force --sign - --timestamp=none "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          export PEEKABOO_APP_PATH="$app"
+          python3 - <<'PY'
+          import json, os, pathlib, plistlib, subprocess
+          app = pathlib.Path(os.environ['PEEKABOO_APP_PATH'])
+          info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+          assert info['PeekabooSourceCommit'] == os.environ['SOURCE_COMMIT'], info
+          executable = app / 'Contents/MacOS' / info['CFBundleExecutable']
+          assert subprocess.check_output(['lipo', '-archs', str(executable)], text=True).strip() == 'x86_64'
+          magic = {b'\xfe\xed\xfa\xce', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf'}
+          binaries = []
+          for path in app.rglob('*'):
+              if not path.is_file() or path.is_symlink():
+                  continue
+              with path.open('rb') as file:
+                  header = file.read(4)
+              if header not in magic:
+                  continue
+              archs = subprocess.check_output(['lipo', '-archs', str(path)], text=True).strip().split()
+              assert 'x86_64' in archs, (str(path), archs)
+              binaries.append({'path': str(path.relative_to(app)), 'architectures': archs})
+          probe = subprocess.run([str(executable), '--help'], capture_output=True, text=True, timeout=30)
+          # The GUI deliberately rejects CLI flags with EX_USAGE, after dyld and Swift startup.
+          assert probe.returncode == 64 and 'GUI/Bridge host' in probe.stderr, (probe.returncode, probe.stderr[-4000:])
+          report = {
+              'version': info['CFBundleShortVersionString'],
+              'bundle_identifier': info['CFBundleIdentifier'],
+              'minimum_macos': info['LSMinimumSystemVersion'],
+              'source_commit': info['PeekabooSourceCommit'],
+              'main_architecture': 'x86_64',
+              'mach_o_files': binaries,
+              'native_startup_probe': 'passed: expected GUI-only EX_USAGE response',
+              'signing': 'ad-hoc personal build; no Developer ID or Apple notarization',
+              'automatic_updates': 'disabled by the existing non-Developer-ID updater policy',
+              'workflow_run': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'workflow_commit': os.environ['GITHUB_SHA'],
+          }
+          pathlib.Path('artifacts/BUILD-INFO.json').write_text(json.dumps(report, indent=2) + '\n')
+          print(json.dumps(report, indent=2))
+          PY
+          ditto -c -k --sequesterRsrc --keepParent "$app" artifacts/Peekaboo-4.6.0-macos-x86_64.app.zip
+          cd artifacts
+          shasum -a 256 Peekaboo-4.6.0-macos-x86_64.app.zip > SHA256SUMS
+
+      - name: Upload the Intel app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Peekaboo-4.6.0-macos-x86_64-app
+          path: |
+            artifacts/Peekaboo-4.6.0-macos-x86_64.app.zip
+            artifacts/SHA256SUMS
+            artifacts/BUILD-INFO.json
+            artifacts/toolchain.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Check background GUI startup on the Intel runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PEEKABOO_CONFIG_DIR="$RUNNER_TEMP/peekaboo-intel-app-validation"
+          python3 - <<'PY'
+          import json, pathlib, subprocess, time
+          binary = pathlib.Path('artifacts/Peekaboo.app/Contents/MacOS/Peekaboo').resolve()
+          log_path = pathlib.Path('artifacts/app-startup.log')
+          with log_path.open('wb') as log:
+              process = subprocess.Popen([str(binary), '--background-bridge-host'], stdout=log, stderr=log)
+              try:
+                  deadline = time.monotonic() + 10
+                  while time.monotonic() < deadline and process.poll() is None:
+                      time.sleep(0.5)
+                  alive = process.poll() is None
+                  log.flush()
+                  output = log_path.read_text(errors='replace')
+                  launched = 'applicationDidFinishLaunching' in output
+                  report = {
+                      'alive_after_10_seconds': alive,
+                      'application_did_finish_launching': launched,
+                      'exit_code_before_shutdown': process.poll(),
+                      'launch_mode': 'background-bridge-host',
+                      'interactive_ui_or_permissions_tested': False,
+                  }
+                  pathlib.Path('artifacts/gui-startup-verification.json').write_text(json.dumps(report, indent=2) + '\n')
+                  print(json.dumps(report, indent=2))
+                  assert alive and launched, output[-8000:]
+              finally:
+                  if process.poll() is None:
+                      process.terminate()
+                      try:
+                          process.wait(timeout=15)
+                      except subprocess.TimeoutExpired:
+                          process.kill()
+                          process.wait()
+          PY
+
+      - name: Upload diagnostics and GUI startup result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: peekaboo-intel-app-diagnostics
+          path: |
+            artifacts/app-build.log
+            artifacts/app-startup.log
+            artifacts/gui-startup-verification.json
+            artifacts/toolchain.txt
+          if-no-files-found: ignore
+          retention-days: 7
