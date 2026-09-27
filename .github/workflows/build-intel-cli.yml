@@ -1,0 +1,204 @@
+name: Build Intel macOS CLI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: peekaboo-intel-cli
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+      SOURCE_COMMIT: b54551ce2d0013e52c2a405bfeabced88ec5c2e0
+      PEEKABOO_CONFIG_DISABLE_MIGRATION: '1'
+    steps:
+      - name: Check out Peekaboo v4.6.0 with its pinned submodules
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: b54551ce2d0013e52c2a405bfeabced88ec5c2e0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Verify the Intel runner and compatible toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          xcodebuild -version
+          swift --version
+          sw_vers
+          mkdir -p artifacts
+          xcodebuild -version > artifacts/toolchain.txt
+          swift --version >> artifacts/toolchain.txt
+          sw_vers >> artifacts/toolchain.txt
+
+      - name: Prepare the Swift workspace and source metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/setup-swift-workspace.py setup
+          python3 - <<'PY'
+          import datetime, os, pathlib, plistlib
+          root = pathlib.Path.cwd()
+          source = root / 'Apps/CLI/Sources/Resources/Info.plist'
+          output = root / 'Apps/CLI/.generated/Intel-Info.plist'
+          metadata = plistlib.loads(source.read_bytes())
+          metadata['PeekabooSourceCommit'] = os.environ['SOURCE_COMMIT']
+          metadata['PeekabooGitCommit'] = os.environ['SOURCE_COMMIT'][:12]
+          metadata['PeekabooBuildDate'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+          metadata['PeekabooVersionDisplayString'] = 'Peekaboo 4.6.0 (Intel, Xcode 26.2)'
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_bytes(plistlib.dumps(metadata))
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('PEEKABOO_CLI_INFO_PLIST_PATH=' + str(output) + '\n')
+          PY
+
+      - name: Build the Intel CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/setup-swift-workspace.py run -- \
+            swift build --package-path Apps/CLI --product peekaboo \
+              --configuration release --jobs 3 \
+              --triple x86_64-apple-macosx15.0 \
+              -Xswiftc -Osize -Xlinker -rpath -Xlinker @executable_path \
+            2>&1 | tee artifacts/build.log
+
+      - name: Package the CLI and its runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_dir="$(swift build --package-path Apps/CLI --configuration release \
+            --triple x86_64-apple-macosx15.0 --show-bin-path)"
+          package_dir="$PWD/artifacts/peekaboo-4.6.0-macos-x86_64"
+          mkdir -p "$package_dir"
+          cp "$build_dir/peekaboo" "$package_dir/peekaboo"
+          cp LICENSE "$package_dir/"
+          cp artifacts/toolchain.txt "$package_dir/"
+          cp Apps/CLI/Package.resolved "$package_dir/Package.resolved"
+          for resource in "$build_dir"/*.bundle; do
+            [ -d "$resource" ] || continue
+            ditto "$resource" "$package_dir/$(basename "$resource")"
+          done
+          SIGN_IDENTITY=- CODESIGN_TIMESTAMP=off \
+            scripts/copy-swift-runtime-libraries.sh "$package_dir/peekaboo" "$package_dir"
+          codesign --force --sign - --timestamp=none \
+            --identifier boo.peekaboo.peekaboo "$package_dir/peekaboo"
+          codesign --verify --strict "$package_dir/peekaboo"
+          test "$(lipo -archs "$package_dir/peekaboo")" = x86_64
+          "$package_dir/peekaboo" --version
+          "$package_dir/peekaboo" mcp --help > "$package_dir/mcp-help.txt"
+          otool -L "$package_dir/peekaboo" > "$package_dir/dynamic-libraries.txt"
+          export PEEKABOO_PACKAGE_DIR="$package_dir"
+          python3 - <<'PY'
+          import json, os, pathlib
+          info = {
+              'version': '4.6.0',
+              'source_commit': os.environ['SOURCE_COMMIT'],
+              'architecture': 'x86_64',
+              'minimum_macos': '15.0',
+              'toolchain': 'Xcode 26.2',
+              'signing': 'ad-hoc; personal build, not an upstream notarized release',
+              'workflow_run': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'workflow_commit': os.environ['GITHUB_SHA'],
+          }
+          pathlib.Path(os.environ['PEEKABOO_PACKAGE_DIR'], 'BUILD-INFO.json').write_text(json.dumps(info, indent=2) + '\n')
+          PY
+
+      - name: Verify the MCP handshake and tool discovery without desktop actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, selectors, subprocess, time
+          package = pathlib.Path('artifacts/peekaboo-4.6.0-macos-x86_64').resolve()
+          error_log = (package / 'mcp-stderr.log').open('wb')
+          process = subprocess.Popen([str(package / 'peekaboo'), 'mcp'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=error_log)
+          selector = selectors.DefaultSelector()
+          selector.register(process.stdout, selectors.EVENT_READ)
+          pending = bytearray()
+          def send(message):
+              process.stdin.write((json.dumps(message) + '\n').encode())
+              process.stdin.flush()
+          def receive(identifier):
+              deadline = time.monotonic() + 60
+              while time.monotonic() < deadline:
+                  while b'\n' in pending:
+                      line, _, remainder = pending.partition(b'\n')
+                      pending[:] = remainder
+                      if not line.strip():
+                          continue
+                      message = json.loads(line)
+                      if message.get('id') == identifier:
+                          if 'error' in message:
+                              raise RuntimeError(message['error'])
+                          return message['result']
+                  if process.poll() is not None:
+                      raise RuntimeError(f'MCP exited with {process.returncode}')
+                  if selector.select(1):
+                      data = os.read(process.stdout.fileno(), 65536)
+                      if data:
+                          pending.extend(data)
+              raise TimeoutError(f'MCP request {identifier} timed out')
+          try:
+              send({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
+                  'protocolVersion': '2024-11-05', 'capabilities': {},
+                  'clientInfo': {'name': 'intel-build-verifier', 'version': '1.0'}}})
+              initialization = receive(1)
+              send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+              send({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list', 'params': {}})
+              inventory = receive(2)
+              names = sorted(tool['name'] for tool in inventory['tools'])
+              assert {'see', 'click', 'type'}.issubset(names), names
+              report = {'initialization': initialization, 'tools': names, 'desktop_actions_performed': False}
+              (package / 'mcp-verification.json').write_text(json.dumps(report, indent=2) + '\n')
+              print(json.dumps(report, indent=2))
+          finally:
+              process.terminate()
+              try:
+                  process.wait(timeout=10)
+              except subprocess.TimeoutExpired:
+                  process.kill()
+                  process.wait()
+              error_log.close()
+              selector.close()
+          PY
+
+      - name: Create the archive and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          COPYFILE_DISABLE=1 tar -czf peekaboo-4.6.0-macos-x86_64.tar.gz peekaboo-4.6.0-macos-x86_64
+          shasum -a 256 peekaboo-4.6.0-macos-x86_64.tar.gz > SHA256SUMS
+
+      - name: Upload the verified Intel build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: peekaboo-4.6.0-macos-x86_64
+          path: |
+            artifacts/peekaboo-4.6.0-macos-x86_64.tar.gz
+            artifacts/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: peekaboo-intel-build-diagnostics
+          path: |
+            artifacts/build.log
+            artifacts/toolchain.txt
+            artifacts/peekaboo-4.6.0-macos-x86_64/mcp-stderr.log
+          if-no-files-found: ignore
+          retention-days: 7
