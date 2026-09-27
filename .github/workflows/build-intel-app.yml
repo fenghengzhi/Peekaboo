@@ -60,12 +60,37 @@ jobs:
               PEEKABOO_SOURCE_COMMIT="$SOURCE_COMMIT" \
             2>&1 | tee artifacts/app-build.log
 
+      - name: Preserve the compiled app for packaging retries
+        shell: bash
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/PeekabooIntelDerivedData/Build/Products/Release/Peekaboo.app" \
+            artifacts/Peekaboo-4.6.0-x86_64-unsigned.app.zip
+
+      - name: Upload the compiled app before signing
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: peekaboo-intel-app-unsigned
+          path: artifacts/Peekaboo-4.6.0-x86_64-unsigned.app.zip
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Package and inspect the personal Intel build
         shell: bash
         run: |
           set -euo pipefail
           app="$PWD/artifacts/Peekaboo.app"
           ditto "$RUNNER_TEMP/PeekabooIntelDerivedData/Build/Products/Release/Peekaboo.app" "$app"
+          # Xcode strips development headers/modules while embedding Sparkle.
+          # Its original resource seal must be regenerated before sealing the app.
+          sparkle="$app/Contents/Frameworks/Sparkle.framework"
+          test -d "$sparkle"
+          codesign --verify --deep --strict "$sparkle/Versions/Current/Updater.app"
+          codesign --verify --deep --strict "$sparkle/Versions/Current/XPCServices/Downloader.xpc"
+          codesign --verify --deep --strict "$sparkle/Versions/Current/XPCServices/Installer.xpc"
+          codesign --verify --strict "$sparkle/Versions/Current/Autoupdate"
+          codesign --force --sign - --timestamp=none "$sparkle"
           codesign --force --sign - --timestamp=none "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
           export PEEKABOO_APP_PATH="$app"
